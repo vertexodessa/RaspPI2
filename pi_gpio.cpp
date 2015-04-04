@@ -17,6 +17,28 @@
 #include <stdint.h>
 
 namespace PI{
+#if defined (OLD_BCM)
+#define BCM2708_PERI_BASE       0x20000000
+#define GPIO_BASE               (BCM2708_PERI_BASE + 0x200000)
+#else
+#define BCM2708_PERI_BASE       0x3F000000
+#define GPIO_BASE               (BCM2708_PERI_BASE + 0x200000)
+#endif
+
+#define BLOCK_SIZE (4*1024)
+
+/* GPIO setup macros. Always use INP_GPIO(x) before using OUT_GPIO(x)
+   or SET_GPIO_ALT(x,y) */
+#define INP_GPIO(g) *(_ugpio+((g)/10)) &= ~(7<<(((g)%10)*3))
+#define OUT_GPIO(g) *(_ugpio+((g)/10)) |=  (1<<(((g)%10)*3))
+#define SET_GPIO_ALT(g,a) \
+    *(_ugpio+(((g)/10))) |= (((a)<=3?(a)+4:(a)==4?3:2)<<(((g)%10)*3))
+
+#define GPIO_SET *(_ugpio+7)     /* sets   bits */
+#define GPIO_CLR *(_ugpio+10)    /* clears bits */
+#define GPIO_GET *(_ugpio+13)    /* gets   all GPIO input levels */
+
+volatile u_int32_t* UsualGPIO::_ugpio = 0;
 
 static int is_signaled = 0;	/* Exit program if signaled */
 /*
@@ -26,6 +48,129 @@ static void sigint_handler(int signo) {
     is_signaled = 1;		/* Signal to exit program */
 }
 
+// ------------------ Non-Polling GPIO methods ---------------------------
+
+UsualGPIO::UsualGPIO(int gpio, Dir out)
+{
+    // TODO: make thread safe (singleton semantics)
+    if ( !_ugpio ) {
+#ifdef DEBUG
+        std::cerr << "opening gpio\n";
+#endif
+        int fd = open("/dev/mem",O_RDWR|O_SYNC);  /* Needs root access */
+        if ( fd < 0 ) {
+            perror("Opening /dev/mem");
+            exit(1);
+        }
+
+        void* map = mmap(
+            NULL,             /* Any address */
+            BLOCK_SIZE,       /* # of bytes */
+            PROT_READ|PROT_WRITE,
+            MAP_SHARED,       /* Shared */
+            fd,               /* /dev/mem */
+            GPIO_BASE         /* Offset to GPIO */
+        );
+
+        if ( map == MAP_FAILED ) {
+            perror("mmap(/dev/mem)");
+            exit(1);
+        }
+
+        close(fd);
+        _ugpio = (volatile u_int32_t *)map;
+    }
+    _gpio = gpio;
+    _out = out;
+
+    if (_out == Output) {
+        gpio_config(_gpio, Output);
+    } else {
+        gpio_config(_gpio, Input);
+    }
+}
+
+void UsualGPIO::WriteLow()
+{
+    Write(0);
+}
+
+void UsualGPIO::WriteHigh()
+{
+    Write(1);
+}
+
+void UsualGPIO::Write(bool val)
+{
+    if ( !_out ) {
+        gpio_config(_gpio, Output);
+        _out = Output;
+    }
+
+    gpio_write(_gpio, val);
+}
+
+bool UsualGPIO::Read()
+{
+    if ( _out ) {
+        gpio_config(_gpio, Input);
+    }
+    return gpio_read(_gpio);
+}
+
+UsualGPIO::~UsualGPIO()
+{
+    gpio_config(_gpio, Input);
+    // TODO: if this is last GPIO, unmap _ugpio and assign NULL
+    // maybe introduce a class for _ugpio and do this in DTOR
+}
+
+// ------------- private UsualGPIO section --------------------
+
+/*********************************************************************
+ * Perform initialization to access GPIO registers:
+ * Sets up pointer ugpio.
+ *********************************************************************/
+void UsualGPIO::gpio_config(int gpio, Dir output)
+{
+#ifdef DEBUG
+    std::cerr << __func__ << gpio << ": " << output << std::endl;
+#endif
+    INP_GPIO(gpio);
+    if ( output ) {
+        OUT_GPIO(gpio);
+    }
+}
+
+/*********************************************************************
+ * Write a bit to the GPIO pin
+ *********************************************************************/
+void UsualGPIO::gpio_write(int gpio,int bit) {
+#ifdef DEBUG
+    std::cerr << __func__ << gpio << ": " << bit << std::endl;
+#endif
+
+    unsigned sel = 1 << gpio;
+
+    if ( bit ) {
+        GPIO_SET = sel;
+    } else  {
+        GPIO_CLR = sel;
+    }
+}
+
+/*********************************************************************
+ * Read a bit from a GPIO pin
+ *********************************************************************/
+int UsualGPIO::gpio_read(int gpio) {
+    unsigned sel = 1 << gpio;
+
+    return (GPIO_GET) & sel ? 1 : 0;
+}
+
+// ------------------- private UsualGPIO section end -----------------
+
+// ------------------ Polling GPIO methods ---------------------------
 PollingGPIO::PollingGPIO(int num) : _fd{-1}
 {
     _pin = num;
@@ -62,7 +207,7 @@ PollingGPIO::~PollingGPIO()
 
 }
 
-// private
+// private PollingGPIO section
 void PollingGPIO::CleanUp()
 {
     close(_fd);
@@ -166,148 +311,7 @@ std::string PollingGPIO::gpio_setpath(int pin, gpio_path_t type) {
 
     return buf;
 }
-
-#if defined (OLD_BCM)
-#define BCM2708_PERI_BASE       0x20000000
-#define GPIO_BASE               (BCM2708_PERI_BASE + 0x200000)
-#else
-#define BCM2708_PERI_BASE       0x3F000000
-#define GPIO_BASE               (BCM2708_PERI_BASE + 0x200000)
-#endif
-
-#define BLOCK_SIZE (4*1024)
-
-/* GPIO setup macros. Always use INP_GPIO(x) before using OUT_GPIO(x)
-   or SET_GPIO_ALT(x,y) */
-#define INP_GPIO(g) *(_ugpio+((g)/10)) &= ~(7<<(((g)%10)*3))
-#define OUT_GPIO(g) *(_ugpio+((g)/10)) |=  (1<<(((g)%10)*3))
-#define SET_GPIO_ALT(g,a) \
-    *(_ugpio+(((g)/10))) |= (((a)<=3?(a)+4:(a)==4?3:2)<<(((g)%10)*3))
-
-#define GPIO_SET *(_ugpio+7)     /* sets   bits */
-#define GPIO_CLR *(_ugpio+10)    /* clears bits */
-#define GPIO_GET *(_ugpio+13)    /* gets   all GPIO input levels */
-
-
-
-
-volatile u_int32_t* UsualGPIO::_ugpio = 0;
-
-// Usual non-polling GPIO functions
-UsualGPIO::UsualGPIO(int gpio, Dir out)
-{
-    // TODO: make thread safe
-    if ( !_ugpio ) {
-#ifdef DEBUG
-        std::cerr << "opening gpio\n";
-#endif
-        int fd = open("/dev/mem",O_RDWR|O_SYNC);  /* Needs root access */
-        if ( fd < 0 ) {
-            perror("Opening /dev/mem");
-            exit(1);
-        }
-
-        void* map = mmap(
-            NULL,             /* Any address */
-            BLOCK_SIZE,       /* # of bytes */
-            PROT_READ|PROT_WRITE,
-            MAP_SHARED,       /* Shared */
-            fd,               /* /dev/mem */
-            GPIO_BASE         /* Offset to GPIO */
-        );
-
-        if ( map == MAP_FAILED ) {
-            perror("mmap(/dev/mem)");
-            exit(1);
-        }
-
-        close(fd);
-        _ugpio = (volatile u_int32_t *)map;
-    }
-    _gpio = gpio;
-    _out = out;
-
-    if (_out == Output) {
-        gpio_config(_gpio, Output);
-    } else {
-        gpio_config(_gpio, Input);
-    }
-}
-
-void UsualGPIO::WriteLow()
-{
-    Write(0);
-}
-
-void UsualGPIO::WriteHigh()
-{
-    Write(1);
-}
-
-void UsualGPIO::Write(bool val)
-{
-    if ( !_out ) {
-        gpio_config(_gpio, Output);
-        _out = Output;
-    }
-
-    gpio_write(_gpio, val);
-}
-
-bool UsualGPIO::Read()
-{
-    if ( _out ) {
-        gpio_config(_gpio, Input);
-    }
-    return gpio_read(_gpio);
-}
-
-UsualGPIO::~UsualGPIO()
-{
-    gpio_config(_gpio, Input);
-}
-
-
-
-/*********************************************************************
- * Perform initialization to access GPIO registers:
- * Sets up pointer ugpio.
- *********************************************************************/
-void UsualGPIO::gpio_config(int gpio, Dir output)
-{
-#ifdef DEBUG
-    std::cerr << __func__ << gpio << ": " << output << std::endl;
-#endif
-
-    INP_GPIO(gpio);
-    if ( output ) {
-        OUT_GPIO(gpio);
-    }
-}
-
-/*********************************************************************
- * Write a bit to the GPIO pin
- *********************************************************************/
-void UsualGPIO::gpio_write(int gpio,int bit) {
-    //std::cerr << __func__ << gpio << ": " << bit << std::endl;
-
-    unsigned sel = 1 << gpio;
-
-    if ( bit ) {
-        GPIO_SET = sel;
-    } else  {
-        GPIO_CLR = sel;
-    }
-}
-
-/*********************************************************************
- * Read a bit from a GPIO pin
- *********************************************************************/
-int UsualGPIO::gpio_read(int gpio) {
-    unsigned sel = 1 << gpio;
-
-    return (GPIO_GET) & sel ? 1 : 0;
-}
+// ------------- private PollingGPIO section end --------------------
 
 }
 
