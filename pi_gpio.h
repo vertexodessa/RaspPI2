@@ -6,7 +6,6 @@
 
 namespace PI {
 
-
 class PollingGPIO
 {
 public:

@@ -22,13 +22,13 @@
 
 namespace PI {
 
+// TODO: make RAII-friendly (pass "const UsualGPIO&")
 double measure_dist(UsualGPIO* trig, UsualGPIO* echo) {
     trig->WriteLow();
     timed_wait(0,100000);
     trig->WriteHigh();
     timed_wait(0,5);
     trig->WriteLow();
-
 
     struct timespec start, stop;
     while(!echo->Read()){}
@@ -43,6 +43,11 @@ double measure_dist(UsualGPIO* trig, UsualGPIO* echo) {
     return dist;
 }
 
+/*********************************************************************
+ * Implement a precision "timed wait".  The parameter early_usec
+ * allows an interrupted select(2) call to consider the wait as
+ * completed, when interrupted with only "early_usec" left remaining.
+ *********************************************************************/
 void timed_wait(long sec,long usec,long early_usec) {
     fd_set mt;
     struct timeval timeout;
