@@ -1,5 +1,8 @@
 
 CXXFLAGS = -g -std=c++0x -O3
+# uncomment if you are compiling for non-PI2 raspberry pi
+#CXXFLAGS := $(CXXFLAGS) -DOLD_BCM
+
 LIBS = -lrt
 
 all: main
